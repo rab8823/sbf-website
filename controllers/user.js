@@ -1,22 +1,8 @@
-var _ = require('lodash');
 var async = require('async');
 var crypto = require('crypto');
 var nodemailer = require('nodemailer');
-var jwt = require('jsonwebtoken');
-var moment = require('moment');
-var request = require('request');
-var qs = require('querystring');
+var passport = require('passport');
 var User = require('../models/user');
-
-function generateToken(user) {
-  var payload = {
-    iss: 'my.domain.com',
-    sub: user.id,
-    iat: moment().unix(),
-    exp: moment().add(7, 'days').unix()
-  };
-  return jwt.sign(payload, process.env.TOKEN_SECRET);
-}
 
 /**
  * Login required middleware
@@ -25,42 +11,68 @@ exports.ensureAuthenticated = function(req, res, next) {
   if (req.isAuthenticated()) {
     next();
   } else {
-    res.status(401).send({ msg: 'Unauthorized' });
+    res.redirect('/login');
   }
 };
-  
-  /**
-   * POST /login
-   * Sign in with email and password
-   */
-  exports.loginPost = function(req, res, next) {
-    req.assert('email', 'Email is not valid').isEmail();
-    req.assert('email', 'Email cannot be blank').notEmpty();
-    req.assert('password', 'Password cannot be blank').notEmpty();
-    req.sanitize('email').normalizeEmail({ remove_dots: false });
 
-    var errors = req.validationErrors();
+/**
+ * GET /login
+ */
+exports.loginGet = function(req, res) {
+  if (req.user) {
+    return res.redirect('/');
+  }
+  res.render('account/login', {
+    title: 'Log in'
+  });
+};
 
-    if (errors) {
-      return res.status(400).send(errors);
+/**
+ * POST /login
+ */
+exports.loginPost = function(req, res, next) {
+  req.assert('email', 'Email is not valid').isEmail();
+  req.assert('email', 'Email cannot be blank').notEmpty();
+  req.assert('password', 'Password cannot be blank').notEmpty();
+  req.sanitize('email').normalizeEmail({ remove_dots: false });
+
+  var errors = req.validationErrors();
+
+  if (errors) {
+    req.flash('error', errors);
+    return res.redirect('/login');
+  }
+
+  passport.authenticate('local', function(err, user, info) {
+    if (!user) {
+      req.flash('error', info);
+      return res.redirect('/login')
     }
+    req.logIn(user, function(err) {
+      res.redirect('/');
+    });
+  })(req, res, next);
+};
 
-    new User({ email: req.body.email })
-      .fetch()
-      .then(function(user) {
-        if (!user) {
-          return res.status(401).send({ msg: 'The email address ' + req.body.email + ' is not associated with any account. ' +
-          'Double-check your email address and try again.'
-          });
-        }
-        user.comparePassword(req.body.password, function(err, isMatch) {
-          if (!isMatch) {
-            return res.status(401).send({ msg: 'Invalid email or password' });
-          }
-          res.send({ token: generateToken(user), user: user.toJSON() });
-        });
-      });
-  };
+/**
+ * GET /logout
+ */
+exports.logout = function(req, res) {
+  req.logout();
+  res.redirect('/');
+};
+
+/**
+ * GET /signup
+ */
+exports.signupGet = function(req, res) {
+  if (req.user) {
+    return res.redirect('/');
+  }
+  res.render('account/signup', {
+    title: 'Sign up'
+  });
+};
 
 /**
  * POST /signup
@@ -75,7 +87,8 @@ exports.signupPost = function(req, res, next) {
   var errors = req.validationErrors();
 
   if (errors) {
-    return res.status(400).send(errors);
+    req.flash('error', errors);
+    return res.redirect('/signup');
   }
 
   new User({
@@ -84,15 +97,26 @@ exports.signupPost = function(req, res, next) {
     password: req.body.password
   }).save()
     .then(function(user) {
-    res.send({ token: generateToken(user), user: user });
+      req.logIn(user, function(err) {
+        res.redirect('/');
+      });
     })
     .catch(function(err) {
       if (err.code === 'ER_DUP_ENTRY') {
-    return res.status(400).send({ msg: 'The email address you have entered is already associated with another account.' });
+      req.flash('error', { msg: 'The email address you have entered is already associated with another account.' });
+      return res.redirect('/signup');
       }
     });
 };
 
+/**
+ * GET /account
+ */
+exports.accountGet = function(req, res) {
+  res.render('account/profile', {
+    title: 'My Account'
+  });
+};
 
 /**
  * PUT /account
@@ -111,7 +135,8 @@ exports.accountPut = function(req, res, next) {
   var errors = req.validationErrors();
 
   if (errors) {
-    return res.status(400).send(errors);
+    req.flash('error', errors);
+    return res.redirect('/account');
   }
 
   var user = new User({ id: req.user.id });
@@ -128,18 +153,18 @@ exports.accountPut = function(req, res, next) {
     }, { patch: true });
   }
   
-    user.then(function(user) {
-      if ('password' in req.body) {
-        res.send({ msg: 'Your password has been changed.' });
-      } else {
-        res.send({ user: user, msg: 'Your profile information has been updated.' });
-      }
-      res.redirect('/account');
-    }).catch(function(err) {
-      if (err.code === 'ER_DUP_ENTRY') {
-        res.status(409).send({ msg: 'The email address you have entered is already associated with another account.' });
-      }
-    });
+  user.then(function(user) {
+    if ('password' in req.body) {
+      req.flash('success', { msg: 'Your password has been changed.' });
+    } else {
+      req.flash('success', { msg: 'Your profile information has been updated.' });
+    }
+    res.redirect('/account');
+  }).catch(function(err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      req.flash('error', { msg: 'The email address you have entered is already associated with another account.' });
+    }
+  });
 };
 
 /**
@@ -147,7 +172,9 @@ exports.accountPut = function(req, res, next) {
  */
 exports.accountDelete = function(req, res, next) {
   new User({ id: req.user.id }).destroy().then(function(user) {
-    res.send({ msg: 'Your account has been permanently deleted.' });
+    req.logout();
+    req.flash('info', { msg: 'Your account has been permanently deleted.' });
+    res.redirect('/');
   });
 };
 
@@ -172,12 +199,26 @@ exports.unlink = function(req, res, next) {
           user.set('vk', null);
           break;
         default:
-        return res.status(400).send({ msg: 'Invalid OAuth Provider' });
+        req.flash('error', { msg: 'Invalid OAuth Provider' });
+        return res.redirect('/account');
       }
       user.save(user.changed, { patch: true }).then(function() {
-      res.send({ msg: 'Your account has been unlinked.' });
+      req.flash('success', { msg: 'Your account has been unlinked.' });
+      res.redirect('/account');
       });
     });
+};
+
+/**
+ * GET /forgot
+ */
+exports.forgotGet = function(req, res) {
+  if (req.isAuthenticated()) {
+    return res.redirect('/');
+  }
+  res.render('account/forgot', {
+    title: 'Forgot Password'
+  });
 };
 
 /**
@@ -191,7 +232,8 @@ exports.forgotPost = function(req, res, next) {
   var errors = req.validationErrors();
 
   if (errors) {
-    return res.status(400).send(errors);
+    req.flash('error', errors);
+    return res.redirect('/forgot');
   }
 
   async.waterfall([
@@ -206,7 +248,8 @@ exports.forgotPost = function(req, res, next) {
         .fetch()
         .then(function(user) {
           if (!user) {
-        return res.status(400).send({ msg: 'The email address ' + req.body.email + ' is not associated with any account.' });
+        req.flash('error', { msg: 'The email address ' + req.body.email + ' is not associated with any account.' });
+        return res.redirect('/forgot');
           }
           user.set('passwordResetToken', token);
           user.set('passwordResetExpires', new Date(Date.now() + 3600000)); // expire in 1 hour
@@ -219,8 +262,8 @@ exports.forgotPost = function(req, res, next) {
       var transporter = nodemailer.createTransport({
         service: 'Mailgun',
         auth: {
-          user: process.env.MAILGUN_USERNAME,
-          pass: process.env.MAILGUN_PASSWORD
+          api_key: env.process.MAILGUN_APIKEY,
+          domain: env.process.MAILGUN_DOMAIN
         }
       });
       var mailOptions = {
@@ -233,11 +276,32 @@ exports.forgotPost = function(req, res, next) {
         'If you did not request this, please ignore this email and your password will remain unchanged.\n'
       };
       transporter.sendMail(mailOptions, function(err) {
-        res.send({ msg: 'An email has been sent to ' + user.email + ' with further instructions.' });
-        done(err);
+        req.flash('info', { msg: 'An email has been sent to ' + user.email + ' with further instructions.' });
+        res.redirect('/forgot');
       });
     }
   ]);
+};
+
+/**
+ * GET /reset
+ */
+exports.resetGet = function(req, res) {
+  if (req.isAuthenticated()) {
+    return res.redirect('/');
+  }
+  new User({ passwordResetToken: req.params.token })
+    .where('passwordResetExpires', '>', new Date())
+    .fetch()
+    .then(function(user) {
+      if (!user) {
+        req.flash('error', { msg: 'Password reset token is invalid or has expired.' });
+        return res.redirect('/forgot');
+      }
+      res.render('account/reset', {
+        title: 'Password Reset'
+      });
+    });
 };
 
 /**
@@ -250,7 +314,8 @@ exports.resetPost = function(req, res, next) {
   var errors = req.validationErrors();
 
   if (errors) {
-      return res.status(400).send(errors);
+    req.flash('error', errors);
+    return res.redirect('back');
   }
 
   async.waterfall([
@@ -260,7 +325,8 @@ exports.resetPost = function(req, res, next) {
         .fetch()
         .then(function(user) {
           if (!user) {
-          return res.status(400).send({ msg: 'Password reset token is invalid or has expired.' });
+          req.flash('error', { msg: 'Password reset token is invalid or has expired.' });
+          return res.redirect('back');
           }
           user.set('password', req.body.password);
           user.set('passwordResetToken', null);
@@ -276,8 +342,8 @@ exports.resetPost = function(req, res, next) {
       var transporter = nodemailer.createTransport({
         service: 'Mailgun',
         auth: {
-          user: process.env.MAILGUN_USERNAME,
-          pass: process.env.MAILGUN_PASSWORD
+          api_key: process.env.MAILGUN_APIKEY,
+          domain: process.env.MAILGUN_DOMAIN
         }
       });
       var mailOptions = {
@@ -288,86 +354,9 @@ exports.resetPost = function(req, res, next) {
         'This is a confirmation that the password for your account ' + user.email + ' has just been changed.\n'
       };
       transporter.sendMail(mailOptions, function(err) {
-      res.send({ msg: 'Your password has been changed successfully.' });
+        req.flash('success', { msg: 'Your password has been changed successfully.' });
+        res.redirect('/account');
       });
     }
   ]);
-};
-/**
- * POST /auth/google
- * Sign in with Google
- */
-exports.authGoogle = function(req, res) {
-  var accessTokenUrl = 'https://accounts.google.com/o/oauth2/token';
-  var peopleApiUrl = 'https://www.googleapis.com/plus/v1/people/me/openIdConnect';
-
-  var params = {
-    code: req.body.code,
-    client_id: req.body.clientId,
-    client_secret: process.env.GOOGLE_SECRET,
-    redirect_uri: req.body.redirectUri,
-    grant_type: 'authorization_code'
-  };
-
-  // Step 1. Exchange authorization code for access token.
-  request.post(accessTokenUrl, { json: true, form: params }, function(err, response, token) {
-    var accessToken = token.access_token;
-    var headers = { Authorization: 'Bearer ' + accessToken };
-
-    // Step 2. Retrieve user's profile information.
-    request.get({ url: peopleApiUrl, headers: headers, json: true }, function(err, response, profile) {
-      if (profile.error) {
-        return res.status(500).send({ message: profile.error.message });
-      }
-      // Step 3a. Link accounts if user is authenticated.
-      if (req.isAuthenticated()) {
-        new User({ google: profile.sub })
-          .fetch()
-          .then(function(user) {
-            if (user) {
-              return res.status(409).send({ msg: 'There is already an existing account linked with Google that belongs to you.' });
-            }
-            user = req.user;
-            user.set('name', user.get('name') || profile.name);
-            user.set('gender', user.get('gender') || profile.gender);
-            user.set('picture', user.get('picture') || profile.picture.replace('sz=50', 'sz=200'));
-            user.set('location', user.get('location') || profile.location);
-            user.set('google', profile.id);
-            user.save(user.changed, { patch: true }).then(function() {
-              res.send({ token: generateToken(user), user: user });
-            });
-          });
-      } else {
-        // Step 3b. Create a new user account or return an existing one.
-        new User({ google: profile.sub })
-          .fetch()
-          .then(function(user) {
-            if (user) {
-              return res.send({ token: generateToken(user), user: user });
-            }
-            new User({ email: profile.email })
-              .fetch()
-              .then(function(user) {
-                if (user) {
-                  return res.status(400).send({ msg: user.get('email') + ' is already associated with another account.' })
-                }
-                user = new User();
-                user.set('name', profile.name);
-                user.set('email', profile.email);
-                user.set('gender', profile.gender);
-                user.set('location', profile.location);
-                user.set('picture', profile.picture.replace('sz=50', 'sz=200'));
-                user.set('google', profile.sub);
-                user.save().then(function(user) {
-                  res.send({ token: generateToken(user), user: user });
-                });
-              });
-          });
-      }
-    });
-  });
-};
-
-exports.authGoogleCallback = function(req, res) {
-  res.render('loading');
 };

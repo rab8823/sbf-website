@@ -2,110 +2,82 @@ var express = require('express');
 var path = require('path');
 var logger = require('morgan');
 var compression = require('compression');
-var cookieParser = require('cookie-parser');
+var methodOverride = require('method-override');
+var session = require('express-session');
+var flash = require('express-flash');
 var bodyParser = require('body-parser');
 var expressValidator = require('express-validator');
 var dotenv = require('dotenv');
-var React = require('react');
-var ReactDOM = require('react-dom/server');
-var Router = require('react-router');
-var Provider = require('react-redux').Provider;
-var jwt = require('jsonwebtoken');
-var moment = require('moment');
-var request = require('request');
+var exphbs = require('express-handlebars');
+var passport = require('passport');
 
 // Load environment variables from .env file
 dotenv.load();
 
-// ES6 Transpiler
-require('babel-core/register');
-require('babel-polyfill');
-
-// Models
-var User = require('./models/user');
-
 // Controllers
-var UserController = require('./controllers/user');
-var ContactController = require('./controllers/contact');
+var HomeController = require('./controllers/home');
+var userController = require('./controllers/user');
+var contactController = require('./controllers/contact');
+var testController = require('./controllers/test');
 
-// React and Server-Side Rendering
-var routes = require('./app/routes');
-var configureStore = require('./app/store/configureStore').default;
+// Passport OAuth strategies
+require('./config/passport');
 
 var app = express();
 
-app.set('views', path.join(__dirname, 'views'));
-app.set('view engine', 'jade');
+
+var hbs = exphbs.create({
+  defaultLayout: 'main',
+  helpers: {
+    ifeq: function(a, b, options) {
+      if (a === b) {
+        return options.fn(this);
+      }
+      return options.inverse(this);
+    },
+    toJSON : function(object) {
+      return JSON.stringify(object);
+    }
+  }
+});
+
+app.engine('handlebars', hbs.engine);
+app.set('view engine', 'handlebars');
 app.set('port', process.env.PORT || 3000);
 app.use(compression());
 app.use(logger('dev'));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(expressValidator());
-app.use(cookieParser());
+app.use(methodOverride('_method'));
+app.use(session({ secret: process.env.SESSION_SECRET, resave: true, saveUninitialized: true }));
+app.use(flash());
+app.use(passport.initialize());
+app.use(passport.session());
+app.use(function(req, res, next) {
+  res.locals.user = req.user ? req.user.toJSON() : null;
+  next();
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.use(function(req, res, next) {
-  req.isAuthenticated = function() {
-    var token = (req.headers.authorization && req.headers.authorization.split(' ')[1]) || req.cookies.token;
-    try {
-      return jwt.verify(token, process.env.TOKEN_SECRET);
-    } catch (err) {
-      return false;
-    }
-  };
-
-  if (req.isAuthenticated()) {
-    var payload = req.isAuthenticated();
-    new User({ id: payload.sub })
-      .fetch()
-      .then(function(user) {
-        req.user = user;
-        next();
-      });
-  } else {
-    next();
-  }
-});
-
-app.post('/contact', ContactController.contactPost);
-app.put('/account', UserController.ensureAuthenticated, UserController.accountPut);
-app.delete('/account', UserController.ensureAuthenticated, UserController.accountDelete);
-app.post('/signup', UserController.signupPost);
-app.post('/login', UserController.loginPost);
-app.post('/forgot', UserController.forgotPost);
-app.post('/reset/:token', UserController.resetPost);
-app.get('/unlink/:provider', UserController.ensureAuthenticated, UserController.unlink);
-app.post('/auth/google', UserController.authGoogle);
-app.get('/auth/google/callback', UserController.authGoogleCallback);
-
-// React server rendering
-app.use(function(req, res) {
-  var initialState = {
-    auth: { token: req.cookies.token, user: req.user },
-    messages: {}
-  };
-
-  var store = configureStore(initialState);
-
-  Router.match({ routes: routes.default(store), location: req.url }, function(err, redirectLocation, renderProps) {
-    if (err) {
-      res.status(500).send(err.message);
-    } else if (redirectLocation) {
-      res.status(302).redirect(redirectLocation.pathname + redirectLocation.search);
-    } else if (renderProps) {
-      var html = ReactDOM.renderToString(React.createElement(Provider, { store: store },
-        React.createElement(Router.RouterContext, renderProps)
-      ));
-      res.render('layout', {
-        html: html,
-        initialState: store.getState()
-      });
-    } else {
-      res.sendStatus(404);
-    }
-  });
-});
+app.get('/', HomeController.index);
+app.get('/contact', contactController.contactGet);
+app.post('/contact', contactController.contactPost);
+app.get('/account', userController.ensureAuthenticated, userController.accountGet);
+app.put('/account', userController.ensureAuthenticated, userController.accountPut);
+app.delete('/account', userController.ensureAuthenticated, userController.accountDelete);
+app.get('/signup', userController.signupGet);
+app.post('/signup', userController.signupPost);
+app.get('/login', userController.loginGet);
+app.post('/login', userController.loginPost);
+app.get('/forgot', userController.forgotGet);
+app.post('/forgot', userController.forgotPost);
+app.get('/reset/:token', userController.resetGet);
+app.post('/reset/:token', userController.resetPost);
+app.get('/logout', userController.logout);
+app.get('/unlink/:provider', userController.ensureAuthenticated, userController.unlink);
+app.get('/test', testController.testGet);
+app.post('/test', testController.testPost);
 
 // Production error handler
 if (app.get('env') === 'production') {
