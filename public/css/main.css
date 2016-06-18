@@ -5,7 +5,14 @@ html {
 
 body {
   margin-bottom: 44px;
+  background:#468966;
+  color:#FFF0A5;
+  font-family:'Segoe UI', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
+
+h1 { font-family: 'Playfair Display', Cambria, Cochin, Georgia, Times, Times New Roman, serif; font-style:italic; }
+
+a { color: #FFB03B; }
 
 ul, ol {
   list-style: none;
